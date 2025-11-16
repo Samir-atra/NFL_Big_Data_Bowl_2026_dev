@@ -4,6 +4,7 @@ from tensorflow.keras import layers
 import os
 from data_loader import load_and_prepare_data, SEQUENCE_LENGTH
 
+import joblib
 def build_model(input_features, output_shape, lstm_units=64):
     """
     Builds a sequential model with two LSTM layers.
@@ -66,6 +67,17 @@ def main():
     model.summary()
 
     train_model(model, train_ds, val_ds, epochs, batch_size)
+
+    # Save the trained model and the preprocessor
+    model_save_path = 'nfl_model.h5'
+    preprocessor_save_path = 'preprocessor.joblib'
+
+    model.save(model_save_path)
+    joblib.dump(preprocessor, preprocessor_save_path)
+
+    print(f"Model saved to {model_save_path}")
+    print(f"Preprocessor saved to {preprocessor_save_path}")
+
 
 if __name__ == '__main__':
     main()

@@ -39,22 +39,22 @@ class DataReader:
         """
         Reads the output data for a given week.
         """
-        path = os.path.join(self.data_dir, f'output_{week}.csv')
-        return pd.read_csv(path)
+        path = os.path.join(self.data_dir, f"output_{week}.csv")
+        if os.path.exists(path):
+            return pd.read_csv(path)
+        return None
 
     def read_week(self, week):
         """
         Reads and merges the input and output data for a given week.
         """
         input_df = self.read_input(week)
-        output_df = self.read_output(week)
-        # The merge key can be different based on the dataset.
-        # Using a common key that is likely to be present.
-        # You might need to adjust this based on the actual data.
-        # A simple concatenation is more robust as input and output files have distinct frame ranges.
-        # Frame 0 is in input, frames > 0 are in output.
-        # We can simply combine them.
-        return pd.concat([input_df, output_df], ignore_index=True)
+        output_df = self.read_output(week) 
+        if output_df is not None:
+            # A simple concatenation is more robust as input and output files have distinct frame ranges.
+            # Frame 0 is in input, frames > 0 are in output.
+            return pd.concat([input_df, output_df], ignore_index=True)
+        return input_df
 
 def main():
     """

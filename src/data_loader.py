@@ -1,8 +1,5 @@
+
 import os
-# Force JAX to use CPU due to GPU conflicts and memory issues in the current environment.
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-# Force TensorFlow to use CPU due to GPU conflicts and memory issues in the current environment.
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 import pandas as pd
 import tensorflow as tf
 import jax.numpy as jnp
@@ -26,7 +23,7 @@ def get_feature_label_specs(dataset):
     element_spec = dataset.element_spec
     return element_spec[0], element_spec[1]
 
-def create_preprocessor(features_df):
+def create_preprocessor(features_df: pd.DataFrame):
     """
     Creates a preprocessor for the NFL Big Data Bowl 2026 prediction data.
 
@@ -56,35 +53,44 @@ def create_preprocessor(features_df):
     return preprocessor
 
 def height_to_inches(height_str):
-    """Converts height string 'feet-inches' to inches."""
+    """
+    Converts height string 'feet-inches' to inches.
+    """
     if isinstance(height_str, str):
         feet, inches = map(int, height_str.split('-'))
         return feet * 12 + inches
-    return jnp.nan
+    return np.nan
 
 SEQUENCE_LENGTH = 10
 
-def create_sequences(df, sequence_length, feature_columns_for_model):
+def _create_sequences_for_group(group_df: pd.DataFrame, sequence_length):
     """
-    Creates sequences of features and corresponding labels for a single player/play.
-    Each sequence consists of `sequence_length` frames, and the label is the
-    x_label, y_label of the frame immediately following the sequence.
+    Creates sequences of features and corresponding labels for a single player/play group.
     """
+    # Ensure the DataFrame is sorted by frame_id
+    group_df = group_df.sort_values(by='frame_id').reset_index(drop=True)
+
+    num_frames = len(group_df)
+    if num_frames < sequence_length + 1:
+        return np.array([]), np.array([])
+
+    # Extract features and labels as numpy arrays
+    feature_cols = [col for col in group_df.columns if col not in ['game_id', 'play_id', 'nfl_id', 'frame_id', 'x_label', 'y_label']]
+    features_array = group_df[feature_cols].values
+    labels_array = group_df[['x_label', 'y_label']].values
+
     sequences = []
     labels = []
-    # Ensure the DataFrame is sorted by frame_id
-    df = df.sort_values(by='frame_id').reset_index(drop=True)
 
-    for i in range(len(df) - sequence_length):
-        # Features are frames i to i + sequence_length - 1, selecting only model features
-        seq_features = df.iloc[i:i + sequence_length][feature_columns_for_model]
-        # Label is frame i + sequence_length
-        seq_label = df.iloc[i + sequence_length][['x_label', 'y_label']]
-        
-        sequences.append(seq_features)
-        labels.append(seq_label)
-    
-    return sequences, labels
+    # Number of complete sequences that can be formed
+    num_sequences = num_frames - sequence_length
+
+    for i in range(num_sequences):
+        sequences.append(features_array[i : i + sequence_length])
+        labels.append(labels_array[i + sequence_length])
+
+    return np.array(sequences), np.array(labels)
+
 
 def load_and_prepare_data(data_dir, test_size=0.2, random_state=42):
     """
@@ -141,25 +147,32 @@ def load_and_prepare_data(data_dir, test_size=0.2, random_state=42):
     preprocessor = create_preprocessor(features_for_preprocessor_fitting)
     preprocessor.fit(features_for_preprocessor_fitting) # Fit the preprocessor here
 
+    # Apply preprocessing to the entire feature set
+    # This will return a sparse matrix, convert to dense array for sequence creation
+    processed_features_array = preprocessor.transform(features_for_preprocessor_fitting).toarray()
+    
+    # Create a DataFrame from the processed features to easily merge back with identifiers
+    processed_features_df = pd.DataFrame(processed_features_array, index=merged_df.index)
+    
+    # Add back identifiers needed for grouping and labels
+    processed_df = pd.concat([merged_df[['game_id', 'play_id', 'nfl_id', 'frame_id', 'x_label', 'y_label']], processed_features_df], axis=1)
+
+    all_sequences = []
+    all_labels = []
+
     # Group by game, play, and player to create sequences
-    for (game_id, play_id, nfl_id), group_df in merged_df.groupby(['game_id', 'play_id', 'nfl_id']):
-        if len(group_df) >= SEQUENCE_LENGTH + 1: # Need at least SEQUENCE_LENGTH + 1 frames for one sequence and its label
-            sequences, labels = create_sequences(group_df, SEQUENCE_LENGTH, feature_cols_for_model) # Pass feature_cols_for_model
-            all_sequences.extend(sequences)
-            all_labels.extend(labels)
+    for (game_id, play_id, nfl_id), group_df in processed_df.groupby(['game_id', 'play_id', 'nfl_id']):
+        sequences, labels = _create_sequences_for_group(group_df, SEQUENCE_LENGTH)
+        print(f"Group: {game_id}, {play_id}, {nfl_id} - Sequences length: {len(sequences)}, Labels length: {len(labels)}")
+        if sequences.size > 0 and labels.size > 0:
+            all_sequences.append(sequences)
+            all_labels.append(labels)
 
     if not all_sequences:
-        raise ValueError("No sequences could be created. Check data and SEQUENCE_LENGTH.")
+        raise ValueError("No sequences could be created. Please check data and SEQUENCE_LENGTH.")
 
-    # Transform all sequences using the already fitted preprocessor
-    processed_sequences = []
-    for seq_df in all_sequences:
-        # Ensure seq_df only contains the columns the preprocessor was fitted on
-        processed_seq = preprocessor.transform(seq_df).toarray()
-        processed_sequences.append(processed_seq)
-
-    X = jnp.array(processed_sequences)
-    y = jnp.array(pd.DataFrame(all_labels).values)
+    X = np.concatenate(all_sequences, axis=0)
+    y = np.concatenate(all_labels, axis=0)
 
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_size, random_state=random_state)
 
@@ -168,30 +181,3 @@ def load_and_prepare_data(data_dir, test_size=0.2, random_state=42):
 
     return train_dataset, val_dataset, preprocessor
 
-if __name__ == '__main__':
-    data_directory = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-prediction/train'
-    try:
-        train_ds, val_ds, preprocessor = load_and_prepare_data(data_directory)
-        print("Successfully created training and validation datasets.")
-        print("Training dataset:", train_ds)
-        print("Validation dataset:", val_ds)
-
-        feature_spec, label_spec = get_feature_label_specs(train_ds)
-        print("\n--- Feature Spec ---")
-        print(feature_spec)
-        print("\n--- Label Spec ---")
-        print(label_spec)
-        
-        # Example of how to inspect the first element
-        for features, label in train_ds.take(1):
-            print("\n--- Example processed feature batch ---")
-            print(features.numpy())
-            print("\n--- Example label ---")
-            print(label.numpy())
-
-    except FileNotFoundError:
-        print(f"Error: The directory '{data_directory}' was not found.")
-    except ValueError as e:
-        print(f"Error: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
