@@ -17,10 +17,15 @@ class DataReader:
         Gets a list of the available weeks in the data directory.
         """
         weeks = set()
-        for f in os.listdir(self.data_dir):
-            if f.startswith('input_') and f.endswith('.csv'):
-                week_str = f.replace('input_', '').replace('.csv', '')
-                weeks.add(week_str)
+        # Use glob to find all csv files in the directory
+        csv_files = glob.glob(os.path.join(self.data_dir, '*.csv'))
+        
+        for f_path in csv_files:
+            filename = os.path.basename(f_path)
+            # Distinguish between input and output files to get the week identifier
+            if filename.startswith('input_'):
+                week_id = filename.replace('input_', '').replace('.csv', '')
+                weeks.add(week_id)
         return sorted(list(weeks))
 
     def read_input(self, week):
@@ -46,8 +51,10 @@ class DataReader:
         # The merge key can be different based on the dataset.
         # Using a common key that is likely to be present.
         # You might need to adjust this based on the actual data.
-        merge_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id']
-        return pd.merge(input_df, output_df, on=merge_cols, how='outer')
+        # A simple concatenation is more robust as input and output files have distinct frame ranges.
+        # Frame 0 is in input, frames > 0 are in output.
+        # We can simply combine them.
+        return pd.concat([input_df, output_df], ignore_index=True)
 
 def main():
     """

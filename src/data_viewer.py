@@ -94,7 +94,7 @@ class DataViewerApp:
 
         for col in df.columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=100, anchor='w')
+            self.tree.column(col, width=100, minwidth=100, stretch=tk.NO, anchor='w')
 
         # Insert new data
         df_display = df.head(100).fillna("N/A")
