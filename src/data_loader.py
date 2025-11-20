@@ -38,7 +38,7 @@ def create_preprocessor(features_df: pd.DataFrame):
     boolean_features = ['player_to_predict']
 
     numerical_transformer = StandardScaler()
-    categorical_transformer = OneHotEncoder(handle_unknown='ignore')
+    categorical_transformer = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
     boolean_transformer = FunctionTransformer(lambda x: x.astype(int))
 
     preprocessor = ColumnTransformer(
