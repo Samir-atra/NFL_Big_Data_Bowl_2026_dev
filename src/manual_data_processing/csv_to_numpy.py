@@ -184,87 +184,185 @@ class NFLDataLoader:
 
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import Sequence
 
-def create_tf_datasets(X, y, test_size=0.2, batch_size=32):
+class NFLDataSequence(Sequence):
     """
-    Splits X and y into training and validation sets and creates tf.data.Datasets.
+    Keras Sequence for NFL data with automatic padding of variable-length sequences.
+    """
+    def __init__(self, X, y, batch_size=32, maxlen_x=None, maxlen_y=None, shuffle=True):
+        """
+        Args:
+            X (list): List of input sequences (each sequence is a list of time steps)
+            y (list): List of output sequences (each sequence is a list of time steps)
+            batch_size (int): Batch size
+            maxlen_x (int, optional): Maximum length for input sequences. If None, uses max length in data.
+            maxlen_y (int, optional): Maximum length for output sequences. If None, uses max length in data.
+            shuffle (bool): Whether to shuffle data at the end of each epoch
+        """
+        self.X = X
+        self.y = y
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.indices = np.arange(len(self.X))
+        
+        # Determine max lengths if not provided
+        if maxlen_x is None:
+            self.maxlen_x = max(len(seq) for seq in X)
+        else:
+            self.maxlen_x = maxlen_x
+            
+        if maxlen_y is None:
+            self.maxlen_y = max(len(seq) for seq in y)
+        else:
+            self.maxlen_y = maxlen_y
+        
+        print(f"NFLDataSequence initialized: {len(self.X)} samples, batch_size={batch_size}")
+        print(f"Max sequence lengths - X: {self.maxlen_x}, y: {self.maxlen_y}")
+        
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+    
+    def __len__(self):
+        """Number of batches per epoch"""
+        return int(np.ceil(len(self.X) / self.batch_size))
+    
+    def __getitem__(self, idx):
+        """
+        Generate one batch of data
+        """
+        # Get batch indices
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        
+        # Get batch data
+        batch_X = [self.X[i] for i in batch_indices]
+        batch_y = [self.y[i] for i in batch_indices]
+        
+        # Process X sequences: handle mixed types
+        # The data from process_value() should already have numeric types as floats
+        # and strings as strings. We need to filter out or encode string columns.
+        batch_X_numeric = []
+        for seq in batch_X:
+            seq_numeric = []
+            for frame in seq:
+                frame_numeric = []
+                for item in frame:
+                    # If item is already a float or int (from process_value), keep it
+                    if isinstance(item, (int, float)):
+                        frame_numeric.append(float(item))
+                    # If it's a string, we need to handle it
+                    # For now, let's use a hash or skip it
+                    # Better approach: filter these columns out or use proper encoding
+                    elif isinstance(item, str):
+                        # Try to convert to float, if fails, use hash or 0
+                        try:
+                            frame_numeric.append(float(item))
+                        except ValueError:
+                            # For non-numeric strings, use a simple hash-based encoding
+                            # This is a simple placeholder - ideally use proper categorical encoding
+                            frame_numeric.append(float(hash(item) % 10000))
+                    else:
+                        frame_numeric.append(0.0)
+                seq_numeric.append(frame_numeric)
+            batch_X_numeric.append(seq_numeric)
+        
+        # Use pad_sequences for both X and y
+        # pad_sequences expects sequences of shape (n_samples, n_timesteps) for 2D
+        # For 3D (n_samples, n_timesteps, n_features), we need to pad manually or use padding='post'
+        
+        # Method: Pad each sequence to maxlen, filling with zeros
+        X_padded = pad_sequences(
+            batch_X_numeric, 
+            maxlen=self.maxlen_x, 
+            dtype='float32',
+            padding='post',
+            truncating='post',
+            value=0.0
+        )
+        
+        y_padded = pad_sequences(
+            batch_y,
+            maxlen=self.maxlen_y,
+            dtype='float32',
+            padding='post',
+            truncating='post',
+            value=0.0
+        )
+        
+        return X_padded, y_padded
+    
+    def on_epoch_end(self):
+        """Shuffle indices after each epoch"""
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+
+
+def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=None, maxlen_y=None):
+    """
+    Splits X and y into training and validation sets and creates Keras Sequence datasets.
+    Uses keras.utils.Sequence with padding to handle variable-length sequences.
     
     Args:
-        X (np.ndarray): Input data.
-        y (np.ndarray): Output data.
+        X (np.ndarray): Input data (object array of variable-length sequences).
+        y (np.ndarray): Output data (object array of variable-length sequences).
         test_size (float): Proportion of the dataset to include in the validation split.
         batch_size (int): Batch size for the datasets.
+        maxlen_x (int, optional): Maximum length for input sequences. If None, auto-detects.
+        maxlen_y (int, optional): Maximum length for output sequences. If None, auto-detects.
         
     Returns:
-        train_dataset (tf.data.Dataset): Training dataset.
-        val_dataset (tf.data.Dataset): Validation dataset.
+        train_sequence (NFLDataSequence): Training data sequence.
+        val_sequence (NFLDataSequence): Validation data sequence.
     """
-    print("\n--- Creating TensorFlow Datasets ---")
-    
-    # Ensure data is in a format compatible with tf.data.Dataset
-    # X and y are currently object arrays of lists (sequences).
-    # We need to handle the variable length or convert to a uniform tensor if possible.
-    # For now, we will cast to string to handle mixed types in X, 
-    # and assume y is numeric but maybe variable length.
-    # Note: tf.data.Dataset.from_tensor_slices requires uniform shape for standard tensors,
-    # or a ragged tensor if shapes vary.
-    
-    # Attempt to convert to RaggedTensors if shapes are variable, or standard tensors if uniform.
-    # Since X is (N,) object array of lists, we can try to convert to RaggedTensor.
+    print("\n--- Creating Keras Sequence Datasets with Padding ---")
     
     try:
-        # Convert X to RaggedTensor (handling variable lengths if any, and mixed types as strings)
-        # Note: converting mixed type list-of-lists to tensor is tricky.
-        # We'll convert everything to string for X to be safe.
-        
-        # Helper to convert object array of lists to list of lists for RaggedTensor
+        # Convert object arrays to lists
         X_list = X.tolist()
         y_list = y.tolist()
         
-        # Split first
+        # Split into train and validation
         print(f"Splitting data (test_size={test_size})...")
-        X_train, X_val, y_train, y_val = train_test_split(X_list, y_list, test_size=test_size, random_state=42)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_list, y_list, 
+            test_size=test_size, 
+            random_state=42
+        )
         
         print(f"Train size: {len(X_train)}")
         print(f"Val size: {len(X_val)}")
         
-        # Create Datasets
-        # Using from_generator is often safer for variable length/complex structures than from_tensor_slices
-        # But let's try ragged constant if possible, or just generator.
-        
-        def generator(data_X, data_y):
-            for x_seq, y_seq in zip(data_X, data_y):
-                # Explicitly convert all elements to string to avoid mixed type error
-                # x_seq is a list of frames (lists), so we iterate through frames and items
-                x_seq_str = [[str(item) for item in frame] for frame in x_seq]
-                
-                # Convert y_seq to float32 tensor
-                yield tf.constant(x_seq_str, dtype=tf.string), tf.constant(y_seq, dtype=tf.float32)
-
-        output_signature = (
-            tf.TensorSpec(shape=(None, None), dtype=tf.string), # (Time, Features) - variable time
-            tf.TensorSpec(shape=(None, None), dtype=tf.float32) # (Time, Features) - variable time
+        # Create Sequence objects
+        print("Creating Training Sequence...")
+        train_sequence = NFLDataSequence(
+            X_train, y_train, 
+            batch_size=batch_size,
+            maxlen_x=maxlen_x,
+            maxlen_y=maxlen_y,
+            shuffle=True
         )
-
-        print("Building Train Dataset...")
-        train_dataset = tf.data.Dataset.from_generator(
-            lambda: generator(X_train, y_train),
-            output_signature=output_signature
-        )
-        train_dataset = train_dataset.batch(batch_size)
         
-        print("Building Validation Dataset...")
-        val_dataset = tf.data.Dataset.from_generator(
-            lambda: generator(X_val, y_val),
-            output_signature=output_signature
+        print("Creating Validation Sequence...")
+        val_sequence = NFLDataSequence(
+            X_val, y_val,
+            batch_size=batch_size,
+            maxlen_x=train_sequence.maxlen_x,  # Use same max lengths as training
+            maxlen_y=train_sequence.maxlen_y,
+            shuffle=False
         )
-        val_dataset = val_dataset.batch(batch_size)
         
-        print("Datasets created successfully.")
-        return train_dataset, val_dataset
+        print("Sequences created successfully.")
+        print(f"Training batches per epoch: {len(train_sequence)}")
+        print(f"Validation batches per epoch: {len(val_sequence)}")
+        
+        return train_sequence, val_sequence
 
     except Exception as e:
-        print(f"Error creating TF datasets: {e}")
+        print(f"Error creating Keras sequences: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 if __name__ == "__main__":
@@ -281,13 +379,15 @@ if __name__ == "__main__":
         print(f"Sample Input Sequence Length: {len(X[0])}")
         print(f"Sample Output Sequence Length: {len(y[0])}")
 
-    # Create TF Datasets
-    train_ds, val_ds = create_tf_datasets(X, y)
+    # Create Keras Sequences with padding
+    train_seq, val_seq = create_tf_datasets(X, y, batch_size=32)
     
-    if train_ds:
-        print("\nVerifying Dataset Element:")
-        for x_batch, y_batch in train_ds.take(1):
-            print(f"Batch X shape: {x_batch.shape}")
-            print(f"Batch y shape: {y_batch.shape}")
+    if train_seq:
+        print("\nVerifying Sequence Element:")
+        # Get one batch to verify shapes
+        x_batch, y_batch = train_seq[0]
+        print(f"Batch X shape: {x_batch.shape}")
+        print(f"Batch y shape: {y_batch.shape}")
+        print(f"Max sequence lengths - X: {train_seq.maxlen_x}, y: {train_seq.maxlen_y}")
 
-    print("\nData loading, alignment, and dataset creation complete.")
+    print("\nData loading, alignment, and sequence creation complete.")
