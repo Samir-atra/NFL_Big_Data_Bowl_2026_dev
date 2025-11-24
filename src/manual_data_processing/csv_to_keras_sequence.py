@@ -6,6 +6,9 @@ class NFLDataLoader:
     """
     Loads and processes NFL Big Data Bowl 2026 data from CSV files.
     Filters input data for 'player_to_predict' == True and aligns with output data.
+    
+    Selected Input Features: ['x', 'y', 's', 'a', 'dir', 'o']
+    Selected Output Features: ['x', 'y']
     """
     def __init__(self, train_dir):
         self.train_dir = train_dir
@@ -50,10 +53,14 @@ class NFLDataLoader:
     def load_input_files(self):
         """
         Loads and filters input CSV files.
+        Filters for 'player_to_predict' == True.
+        Selects specific features: ['x', 'y', 's', 'a', 'dir', 'o'].
         """
         input_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('input') and f.endswith('.csv')])
         print(f"Loading and filtering {len(input_files)} Input files...")
         
+        features_to_keep = ['x', 'y', 's', 'a', 'dir', 'o']
+
         for input_file in input_files:
             input_path = os.path.join(self.train_dir, input_file)
             with open(input_path, 'r') as f:
@@ -65,6 +72,9 @@ class NFLDataLoader:
                 game_id_idx = -1
                 play_id_idx = -1
                 nfl_id_idx = -1
+                
+                # Indices for feature columns
+                feature_indices = []
 
                 for row in reader:
                     if first_row:
@@ -76,6 +86,10 @@ class NFLDataLoader:
                             game_id_idx = row.index('game_id')
                             play_id_idx = row.index('play_id')
                             nfl_id_idx = row.index('nfl_id')
+                            
+                            # Find indices for the features we want to keep
+                            feature_indices = [row.index(feat) for feat in features_to_keep]
+                            
                         except ValueError as e:
                             print(f"Error finding columns in {input_file}: {e}")
                             break
@@ -94,11 +108,14 @@ class NFLDataLoader:
                     
                     if key not in self.input_sequences:
                         self.input_sequences[key] = []
-                    self.input_sequences[key].append([self.process_value(item) for item in row])
+                    
+                    # Append only the selected features
+                    self.input_sequences[key].append([self.process_value(row[i]) for i in feature_indices])
 
     def load_output_files(self):
         """
         Loads output CSV files.
+        Selects specific features: ['x', 'y'].
         """
         output_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('output') and f.endswith('.csv')])
         print(f"Loading {len(output_files)} Output files...")
@@ -152,8 +169,8 @@ class NFLDataLoader:
         """
         Aligns input and output sequences and returns NumPy arrays.
         Returns:
-            X (np.ndarray): Input sequences
-            y (np.ndarray): Output sequences
+            X (np.ndarray): Input sequences with features ['x', 'y', 's', 'a', 'dir', 'o']
+            y (np.ndarray): Output sequences with features ['x', 'y']
         """
         self.load_input_files()
         self.load_output_files()
