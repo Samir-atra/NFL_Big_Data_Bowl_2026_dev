@@ -100,11 +100,17 @@ class NFLDataLoader:
         # We will cast all remaining columns to float, hashing strings if needed.
         
         # Identify ID columns to exclude from feature processing
-        id_cols = ["game_id", "play_id", "nfl_id", "frame_id", "player_to_predict", "time"]
+        id_cols = ["game_id", "play_id", "nfl_id", "frame_id", "player_to_predict", "time", "player_name", "num_frames_output", "ball_land_x", "ball_land_y"]
         feature_cols = [c for c in full_df.columns if c not in id_cols]
         
         expressions = []
         for col in feature_cols:
+            # Handle specific columns based on name
+            if col == "player_birth_date":
+                expr = (pl.lit("2023-09-01").str.to_date() - pl.col(col).str.to_date(format="%Y-%m-%d", strict=False)).dt.total_days() / 365.25
+                expressions.append(expr.alias(col))
+                continue
+
             # Check if column is string type
             if full_df[col].dtype == pl.Utf8:
                 # Try specific conversions first
@@ -117,7 +123,11 @@ class NFLDataLoader:
                 # Else hash
                 
                 expr = (
-                    pl.when(pl.col(col).str.to_lowercase() == "true").then(1.0)
+                    pl.when(pl.col(col).str.contains(r"^\d+-\d+$")).then(
+                        pl.col(col).str.extract(r"(\d+)-(\d+)", 1).cast(pl.Int32) * 12 +
+                        pl.col(col).str.extract(r"(\d+)-(\d+)", 2).cast(pl.Int32)
+                    )
+                    .when(pl.col(col).str.to_lowercase() == "true").then(1.0)
                     .when(pl.col(col).str.to_lowercase() == "false").then(0.0)
                     .when(pl.col(col).str.to_lowercase() == "left").then(0.0)
                     .when(pl.col(col).str.to_lowercase() == "right").then(1.0)
@@ -461,7 +471,7 @@ class NFLDataSequence(Sequence):
             np.random.shuffle(self.indices)
 
 
-def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=10, maxlen_y=10):
+def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=54, maxlen_y=54):
     """Splits data into training and validation sets and creates Keras Sequence datasets.
 
     Uses `train_test_split` to divide the data and then wraps the resulting
