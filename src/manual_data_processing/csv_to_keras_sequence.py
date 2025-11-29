@@ -54,12 +54,14 @@ class NFLDataLoader:
         """
         Loads and filters input CSV files.
         Filters for 'player_to_predict' == True.
-        Selects specific features: ['x', 'y', 's', 'a', 'dir', 'o'].
+        Selects all features matching the unsupervised loader format (18 features).
         """
         input_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('input') and f.endswith('.csv')])
         print(f"Loading and filtering {len(input_files)} Input files...")
         
-        features_to_keep = ['x', 'y', 's', 'a', 'dir', 'o']
+        # Use the same features as unsupervised loader for consistency
+        # These match the 18 features from the unsupervised dataloader
+        id_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id', 'player_to_predict', 'time']
 
         for input_file in input_files:
             input_path = os.path.join(self.train_dir, input_file)
@@ -73,7 +75,7 @@ class NFLDataLoader:
                 play_id_idx = -1
                 nfl_id_idx = -1
                 
-                # Indices for feature columns
+                # Indices for feature columns (all non-ID columns)
                 feature_indices = []
 
                 for row in reader:
@@ -87,8 +89,8 @@ class NFLDataLoader:
                             play_id_idx = row.index('play_id')
                             nfl_id_idx = row.index('nfl_id')
                             
-                            # Find indices for the features we want to keep
-                            feature_indices = [row.index(feat) for feat in features_to_keep]
+                            # Get all feature columns (exclude ID columns)
+                            feature_indices = [i for i, col in enumerate(row) if col not in id_cols]
                             
                         except ValueError as e:
                             print(f"Error finding columns in {input_file}: {e}")
@@ -109,7 +111,7 @@ class NFLDataLoader:
                     if key not in self.input_sequences:
                         self.input_sequences[key] = []
                     
-                    # Append only the selected features
+                    # Append all feature columns (should be 18 features like unsupervised)
                     self.input_sequences[key].append([self.process_value(row[i]) for i in feature_indices])
 
     def load_output_files(self):
