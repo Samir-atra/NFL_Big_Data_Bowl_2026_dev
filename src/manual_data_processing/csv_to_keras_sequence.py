@@ -48,7 +48,9 @@ class NFLDataLoader:
             pass
             
         # Handle Strings (Object type)
-        return str(val)
+        # Use a deterministic hash for strings to ensure consistency
+        import zlib
+        return float(zlib.adler32(val.encode('utf-8')) % 10000)
 
     def load_input_files(self):
         """
@@ -167,7 +169,36 @@ class NFLDataLoader:
                     # Append only the selected features (x, y)
                     self.output_sequences[key].append([float(row[i]) for i in feature_indices])
 
-    def get_aligned_data(self):
+    def normalize_sequences(self, sequences):
+        """
+        Normalizes the sequences (Z-score) feature-wise.
+        """
+        print("Normalizing features...")
+        # Flatten to compute stats
+        all_values = []
+        for seq in sequences:
+            all_values.extend(seq)
+        
+        if not all_values:
+            return sequences, {}
+
+        data_np = np.array(all_values, dtype=np.float32)
+        mean = np.mean(data_np, axis=0)
+        std = np.std(data_np, axis=0)
+        
+        # Avoid division by zero
+        std[std == 0] = 1.0
+        
+        normalized_sequences = []
+        for seq in sequences:
+            seq_np = np.array(seq, dtype=np.float32)
+            norm_seq = (seq_np - mean) / std
+            normalized_sequences.append(norm_seq.tolist())
+            
+        print(f"Normalization complete. Mean shape: {mean.shape}, Std shape: {std.shape}")
+        return normalized_sequences, {'mean': mean, 'std': std}
+
+    def get_aligned_data(self, normalize=False):
         """
         Aligns input and output sequences and returns NumPy arrays.
         Returns:
@@ -186,6 +217,9 @@ class NFLDataLoader:
         for key in common_keys:
             aligned_X.append(self.input_sequences[key])
             aligned_y.append(self.output_sequences[key])
+
+        if normalize and aligned_X:
+            aligned_X, self.stats = self.normalize_sequences(aligned_X)
 
         print(f"Processing complete.")
         print(f"Total Unique Sequences (Matches): {len(common_keys)}")
@@ -399,7 +433,8 @@ if __name__ == "__main__":
     TRAIN_DIR = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-prediction/train/'
     
     loader = NFLDataLoader(TRAIN_DIR)
-    X, y = loader.get_aligned_data()
+    # Enable normalization
+    X, y = loader.get_aligned_data(normalize=True)
 
     print("\n--- Final Data Shapes ---")
     print(f"X (Input) Shape: {X.shape}")

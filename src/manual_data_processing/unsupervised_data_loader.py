@@ -15,13 +15,14 @@ class UnsupervisedNFLDataLoader:
     def __init__(self):
         self.input_sequences = None
         
-    def load_files(self, directories, include_labeled=True, include_unlabeled=True):
+    def load_files(self, directories, include_labeled=True, include_unlabeled=True, normalize=False):
         """Load input files from specified directories.
         
         Args:
             directories (list): List of directory paths to load from
             include_labeled (bool): Include player_to_predict=True sequences
             include_unlabeled (bool): Include player_to_predict=False sequences
+            normalize (bool): Whether to normalize features (Z-score)
         """
         input_dfs = []
         
@@ -107,6 +108,21 @@ class UnsupervisedNFLDataLoader:
         # Sort by frame_id
         if "frame_id" in full_input.columns:
             full_input = full_input.sort(["game_id", "play_id", "nfl_id", "frame_id"])
+            
+        # Normalize features if requested
+        if normalize:
+            print("Normalizing features (Z-score)...")
+            norm_exprs = []
+            for col in feature_cols:
+                # Check for constant columns to avoid division by zero
+                n_unique = full_input.select(pl.col(col).n_unique()).item()
+                if n_unique > 1:
+                    norm_exprs.append(
+                        ((pl.col(col) - pl.col(col).mean()) / (pl.col(col).std() + 1e-8)).alias(col)
+                    )
+            
+            if norm_exprs:
+                full_input = full_input.with_columns(norm_exprs)
         
         # Group into sequences
         agg_exprs = [pl.col(c) for c in feature_cols]
@@ -116,6 +132,12 @@ class UnsupervisedNFLDataLoader:
         ).agg(agg_exprs)
         
         print(f"Total sequences: {len(self.input_sequences)}")
+        
+        # Debug sequence lengths
+        if len(self.input_sequences) > 0:
+            lengths = self.input_sequences.select(pl.col(feature_cols[0]).list.len()).to_series()
+            print(f"Sequence length stats: min={lengths.min()}, max={lengths.max()}, mean={lengths.mean():.2f}")
+
         
     def get_sequences(self):
         """Convert sequences to numpy arrays.
@@ -139,8 +161,10 @@ class UnsupervisedNFLDataLoader:
         X_list = []
         for row in rows:
             feature_seqs = [row[i] for i in input_col_indices]
-            X_seq = list(zip(*feature_seqs))
-            X_list.append(X_seq)
+            # Convert to numpy array to ensure consistent shape (T, F)
+            X_seq = np.array(list(zip(*feature_seqs)), dtype=np.float32)
+            if len(X_seq) > 0:
+                X_list.append(X_seq)
         
         X = np.array(X_list, dtype=object)
         print(f"Loaded {len(X)} sequences")
@@ -186,6 +210,20 @@ class UnsupervisedNFLSequence(Sequence):
         print(f"  Max length: {self.maxlen}")
         print(f"  Task: {task}")
         
+        if self.task == 'next_step':
+            if self.maxlen <= self.prediction_steps:
+                raise ValueError(
+                    f"Invalid configuration: maxlen ({self.maxlen}) must be greater than "
+                    f"prediction_steps ({self.prediction_steps}) for 'next_step' task.\n"
+                    f"Please increase maxlen or decrease prediction_steps."
+                )
+            
+            # Ensure we don't produce 0-length sequences even if maxlen is technically larger but close
+            effective_len = self.maxlen - self.prediction_steps
+            if effective_len < 1:
+                 raise ValueError(f"Effective sequence length (maxlen - prediction_steps) is {effective_len}, must be >= 1.")
+
+        
         if self.shuffle:
             np.random.shuffle(self.indices)
     
@@ -194,7 +232,16 @@ class UnsupervisedNFLSequence(Sequence):
     
     def __getitem__(self, idx):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch_X = [self.X[i] for i in batch_indices]
+        # Filter out empty sequences to prevent pad_sequences errors
+        batch_X = [self.X[i] for i in batch_indices if len(self.X[i]) > 0]
+        
+        if not batch_X:
+            # Return dummy batch with correct shape to avoid crashing the training loop
+            # Shape: (0, maxlen, features)
+            if len(self.X) > 0 and len(self.X[0]) > 0:
+                 feat_dim = self.X[0].shape[1]
+                 return np.zeros((0, self.maxlen, feat_dim)), np.zeros((0, self.maxlen, feat_dim))
+            return np.array([]), np.array([])
         
         if self.task == 'autoencoder':
             # Input and output are the same (reconstruction task)
@@ -287,3 +334,12 @@ if __name__ == "__main__":
         x_batch, y_batch = ns_seq[0]
         print(f"Input shape: {x_batch.shape}")
         print(f"Output shape: {y_batch.shape}")
+
+    # Test 3: Load with normalization
+    print("\nTest 3: Loading with NORMALIZATION")
+    loader_norm = UnsupervisedNFLDataLoader()
+    loader_norm.load_files([PREDICTION_TRAIN_DIR], include_labeled=True, include_unlabeled=True, normalize=True)
+    X_norm = loader_norm.get_sequences()
+    
+    if len(X_norm) > 0:
+        print(f"Sample normalized sequence (first feature of first step): {X_norm[0][0][0]}")
