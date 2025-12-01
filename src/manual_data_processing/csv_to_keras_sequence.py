@@ -1,10 +1,15 @@
-import csv
+import polars as pl
 import numpy as np
 import os
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import Sequence
 
 class NFLDataLoader:
     """
-    Loads and processes NFL Big Data Bowl 2026 data from CSV files.
+    Loads and processes NFL Big Data Bowl 2026 data from CSV files using Polars.
     Filters input data for 'player_to_predict' == True and aligns with output data.
     
     Selected Input Features: ['x', 'y', 's', 'a', 'dir', 'o']
@@ -12,258 +17,254 @@ class NFLDataLoader:
     """
     def __init__(self, train_dir):
         self.train_dir = train_dir
-        self.input_sequences = {}
-        self.output_sequences = {}
-        self.input_header = []
-        self.output_header = []
+        self.input_df = None
+        self.output_df = None
+        self.stats = {}
 
-    def process_value(self, val):
+    def process_features(self, df):
         """
-        Converts a CSV string value into the appropriate type.
+        Processes features using Polars expressions.
+        Converts strings/booleans to floats and hashes categorical strings.
         """
-        val_lower = val.lower()
-
-        # Handle Booleans
-        if val_lower == 'true':
-            return 1.0
-        if val_lower == 'false':
-            return 0.0
+        # Define ID columns to exclude from feature processing
+        id_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id', 'player_to_predict', 'time']
         
-        # Handle Direction (left/right)
-        if val_lower == 'left':
-            return 0.0
-        if val_lower == 'right':
-            return 1.0
-
-        # Handle Player Side (defense/offense)
-        if val_lower == 'defense':
-            return 0.0
-        if val_lower == 'offense':
-            return 1.0
+        # Identify feature columns
+        feature_cols = [col for col in df.columns if col not in id_cols]
         
-        # Handle Numbers (Integers and Floats)
-        try:
-            return float(val)
-        except ValueError:
-            pass
-            
-        # Handle Strings (Object type)
-        # Use a deterministic hash for strings to ensure consistency
-        import zlib
-        return float(zlib.adler32(val.encode('utf-8')) % 10000)
+        expressions = []
+        for col in feature_cols:
+            # Check if column is string type
+            if df[col].dtype == pl.Utf8:
+                expr = (
+                    pl.when(pl.col(col).str.to_lowercase() == "true").then(1.0)
+                    .when(pl.col(col).str.to_lowercase() == "false").then(0.0)
+                    .when(pl.col(col).str.to_lowercase() == "left").then(0.0)
+                    .when(pl.col(col).str.to_lowercase() == "right").then(1.0)
+                    .when(pl.col(col).str.to_lowercase() == "defense").then(0.0)
+                    .when(pl.col(col).str.to_lowercase() == "offense").then(1.0)
+                    .otherwise(
+                        # Try to cast to float, if fails (null), use hash
+                        # Use seed=42 for deterministic hashing
+                        pl.col(col).cast(pl.Float64, strict=False).fill_null(
+                            pl.col(col).hash(seed=42).mod(10000).cast(pl.Float64)
+                        )
+                    ).cast(pl.Float64).alias(col)
+                )
+                expressions.append(expr)
+            else:
+                # Cast numeric columns to Float64
+                expressions.append(pl.col(col).cast(pl.Float64).alias(col))
+                
+        return expressions
 
     def load_input_files(self):
         """
-        Loads and filters input CSV files.
+        Loads and filters input CSV files using Polars.
         Filters for 'player_to_predict' == True.
-        Selects all features matching the unsupervised loader format (18 features).
         """
         input_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('input') and f.endswith('.csv')])
         print(f"Loading and filtering {len(input_files)} Input files...")
         
-        # Use the same features as unsupervised loader for consistency
-        # These match the 18 features from the unsupervised dataloader
-        id_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id', 'player_to_predict', 'time']
-
-        for input_file in input_files:
-            input_path = os.path.join(self.train_dir, input_file)
-            with open(input_path, 'r') as f:
-                reader = csv.reader(f)
-                first_row = True
+        dfs = []
+        for f in input_files:
+            try:
+                path = os.path.join(self.train_dir, f)
+                # Read CSV
+                df = pl.read_csv(path, infer_schema_length=10000)
                 
-                # Indices for ID columns
-                player_to_predict_idx = -1
-                game_id_idx = -1
-                play_id_idx = -1
-                nfl_id_idx = -1
+                # Filter for player_to_predict == True
+                if "player_to_predict" in df.columns:
+                    if df["player_to_predict"].dtype == pl.Boolean:
+                        df = df.filter(pl.col("player_to_predict") == True)
+                    else:
+                        df = df.filter(pl.col("player_to_predict").cast(pl.Utf8).str.to_lowercase() == "true")
                 
-                # Indices for feature columns (all non-ID columns)
-                feature_indices = []
+                if len(df) > 0:
+                    dfs.append(df)
+            except Exception as e:
+                print(f"Error loading {f}: {e}")
+                
+        if not dfs:
+            print("No input data found.")
+            self.input_df = pl.DataFrame()
+            return
 
-                for row in reader:
-                    if first_row:
-                        if not self.input_header:
-                            self.input_header = row
-                        
-                        try:
-                            player_to_predict_idx = row.index('player_to_predict')
-                            game_id_idx = row.index('game_id')
-                            play_id_idx = row.index('play_id')
-                            nfl_id_idx = row.index('nfl_id')
-                            
-                            # Get all feature columns (exclude ID columns)
-                            feature_indices = [i for i, col in enumerate(row) if col not in id_cols]
-                            
-                        except ValueError as e:
-                            print(f"Error finding columns in {input_file}: {e}")
-                            break
-                        
-                        first_row = False
-                        continue
-                    
-                    # Filter: Only keep rows where player_to_predict is True
-                    if player_to_predict_idx != -1:
-                        val = row[player_to_predict_idx].lower()
-                        if val != 'true':
-                            continue 
-
-                    # Extract Key
-                    key = (row[game_id_idx], row[play_id_idx], row[nfl_id_idx])
-                    
-                    if key not in self.input_sequences:
-                        self.input_sequences[key] = []
-                    
-                    # Append all feature columns (should be 18 features like unsupervised)
-                    self.input_sequences[key].append([self.process_value(row[i]) for i in feature_indices])
+        # Concatenate all input dataframes
+        self.input_df = pl.concat(dfs, how="vertical_relaxed")
+        
+        # Process features
+        print("Processing input features...")
+        feature_exprs = self.process_features(self.input_df)
+        
+        # Keep ID columns and processed features
+        id_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id']
+        # Ensure we only select columns that exist
+        existing_id_cols = [c for c in id_cols if c in self.input_df.columns]
+        
+        self.input_df = self.input_df.select(
+            [pl.col(c) for c in existing_id_cols] + feature_exprs
+        )
 
     def load_output_files(self):
         """
-        Loads output CSV files.
+        Loads output CSV files using Polars.
         Selects specific features: ['x', 'y'].
         """
         output_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('output') and f.endswith('.csv')])
         print(f"Loading {len(output_files)} Output files...")
         
+        dfs = []
         features_to_keep = ['x', 'y']
-
-        for output_file in output_files:
-            output_path = os.path.join(self.train_dir, output_file)
-            with open(output_path, 'r') as f:
-                reader = csv.reader(f)
-                first_row = True
+        
+        for f in output_files:
+            try:
+                path = os.path.join(self.train_dir, f)
+                df = pl.read_csv(path, infer_schema_length=10000)
                 
-                # Indices for ID columns
-                game_id_idx = -1
-                play_id_idx = -1
-                nfl_id_idx = -1
+                # Select IDs and target features
+                cols_to_select = ['game_id', 'play_id', 'nfl_id', 'frame_id'] + features_to_keep
+                # Ensure all columns exist
+                existing_cols = [c for c in cols_to_select if c in df.columns]
                 
-                # Indices for feature columns
-                feature_indices = []
-
-                for row in reader:
-                    if first_row:
-                        if not self.output_header:
-                            self.output_header = row
-                        
-                        try:
-                            game_id_idx = row.index('game_id')
-                            play_id_idx = row.index('play_id')
-                            nfl_id_idx = row.index('nfl_id')
-                            
-                            # Find indices for the features we want to keep
-                            feature_indices = [row.index(feat) for feat in features_to_keep]
-                            
-                        except ValueError as e:
-                            print(f"Error finding columns in {output_file}: {e}")
-                            break
-
-                        first_row = False
-                        continue
+                if len(existing_cols) == len(cols_to_select):
+                    dfs.append(df.select(existing_cols))
+                else:
+                    print(f"Missing columns in {f}. Found: {existing_cols}")
                     
-                    # Extract Key
-                    key = (row[game_id_idx], row[play_id_idx], row[nfl_id_idx])
-                    
-                    if key not in self.output_sequences:
-                        self.output_sequences[key] = []
-                    
-                    # Append only the selected features (x, y)
-                    self.output_sequences[key].append([float(row[i]) for i in feature_indices])
+            except Exception as e:
+                print(f"Error loading {f}: {e}")
 
-    def normalize_sequences(self, sequences):
+        if not dfs:
+            print("No output data found.")
+            self.output_df = pl.DataFrame()
+            return
+
+        self.output_df = pl.concat(dfs, how="vertical_relaxed")
+        
+        # Cast targets to float
+        self.output_df = self.output_df.with_columns([
+            pl.col(c).cast(pl.Float64) for c in features_to_keep
+        ])
+
+    def normalize_data(self, df, feature_cols):
         """
-        Normalizes the sequences (Z-score) feature-wise.
+        Normalizes the dataframe features (Z-score).
         """
         print("Normalizing features...")
-        # Flatten to compute stats
-        all_values = []
-        for seq in sequences:
-            all_values.extend(seq)
+        stats = {}
+        exprs = []
         
-        if not all_values:
-            return sequences, {}
-
-        data_np = np.array(all_values, dtype=np.float32)
-        mean = np.mean(data_np, axis=0)
-        std = np.std(data_np, axis=0)
-        
-        # Avoid division by zero
-        std[std == 0] = 1.0
-        
-        normalized_sequences = []
-        for seq in sequences:
-            seq_np = np.array(seq, dtype=np.float32)
-            norm_seq = (seq_np - mean) / std
-            normalized_sequences.append(norm_seq.tolist())
+        for col in feature_cols:
+            mean = df.select(pl.col(col).mean()).item()
+            std = df.select(pl.col(col).std()).item()
             
-        print(f"Normalization complete. Mean shape: {mean.shape}, Std shape: {std.shape}")
-        return normalized_sequences, {'mean': mean, 'std': std}
+            # Avoid division by zero
+            if std == 0 or std is None:
+                std = 1.0
+            if mean is None:
+                mean = 0.0
+                
+            stats[col] = {'mean': mean, 'std': std}
+            exprs.append(((pl.col(col) - mean) / std).alias(col))
+            
+        return df.with_columns(exprs), stats
 
     def get_aligned_data(self, normalize=False):
         """
         Aligns input and output sequences and returns NumPy arrays.
         Returns:
-            X (np.ndarray): Input sequences with features ['x', 'y', 's', 'a', 'dir', 'o']
-            y (np.ndarray): Output sequences with features ['x', 'y']
+            X (np.ndarray): Input sequences
+            y (np.ndarray): Output sequences
         """
         self.load_input_files()
         self.load_output_files()
-
-        print("Aligning Input and Output sequences...")
-        common_keys = sorted(list(set(self.input_sequences.keys()).intersection(set(self.output_sequences.keys()))))
-
-        aligned_X = []
-        aligned_y = []
-
-        for key in common_keys:
-            aligned_X.append(self.input_sequences[key])
-            aligned_y.append(self.output_sequences[key])
-
-        if normalize and aligned_X:
-            aligned_X, self.stats = self.normalize_sequences(aligned_X)
-
-        print(f"Processing complete.")
-        print(f"Total Unique Sequences (Matches): {len(common_keys)}")
-
-        if not aligned_X:
-            print("No matching data found.")
+        
+        if self.input_df is None or self.input_df.is_empty() or \
+           self.output_df is None or self.output_df.is_empty():
             return np.array([]), np.array([])
 
-        # Convert to NumPy arrays
-        # Using dtype=object to handle potential variable lengths or mixed types safely
-        try:
-            X = np.array(aligned_X, dtype=object)
-            print(f"Initial X shape: {X.shape}")
-        except Exception as e:
-            print(f"Error creating X array: {e}")
-            X = np.array([])
-
-        try:
-            y = np.array(aligned_y, dtype=object)
-            print(f"Initial y shape: {y.shape}")
-        except Exception as e:
-            print(f"Error creating y array: {e}")
-            y = np.array([])
+        print("Aligning Input and Output sequences...")
+        
+        # Rename output columns to avoid collision with input columns
+        output_features = ['x', 'y']
+        rename_map = {c: f"target_{c}" for c in output_features}
+        self.output_df = self.output_df.rename(rename_map)
+        
+        # Join input and output on IDs
+        joined_df = self.input_df.join(
+            self.output_df,
+            on=['game_id', 'play_id', 'nfl_id', 'frame_id'],
+            how='inner'
+        )
+        
+        # Sort by frame_id to ensure temporal order
+        joined_df = joined_df.sort(['game_id', 'play_id', 'nfl_id', 'frame_id'])
+        
+        # Identify feature columns (from input) and target columns (from output)
+        id_cols = {'game_id', 'play_id', 'nfl_id', 'frame_id'}
+        input_cols = [c for c in self.input_df.columns if c not in id_cols]
+        target_cols = [f"target_{c}" for c in output_features]
+        
+        # Normalize if requested
+        if normalize:
+            # Normalize input features
+            normalized_df, self.stats = self.normalize_data(joined_df, input_cols)
+            joined_df = normalized_df
             
+        # Group by sequence
+        print("Grouping sequences...")
+        
+        # Aggregation expressions
+        input_agg = [pl.col(c) for c in input_cols]
+        target_agg = [pl.col(c) for c in target_cols]
+        
+        sequences_df = joined_df.group_by(['game_id', 'play_id', 'nfl_id'], maintain_order=True).agg(
+            input_agg + target_agg
+        )
+        
+        print(f"Total Unique Sequences: {len(sequences_df)}")
+        
+        # Convert to NumPy object arrays
+        X_list = []
+        y_list = []
+        
+        # Iterate rows and stack features
+        rows = sequences_df.iter_rows(named=True)
+        for row in rows:
+            # Check sequence length
+            seq_len = len(row[input_cols[0]])
+            if seq_len == 0:
+                continue
+                
+            # Stack features: (seq_len, n_features)
+            input_seq = np.column_stack([row[c] for c in input_cols])
+            target_seq = np.column_stack([row[c] for c in target_cols])
+            
+            X_list.append(input_seq)
+            y_list.append(target_seq)
+            
+        X = np.array(X_list, dtype=object)
+        y = np.array(y_list, dtype=object)
+        
+        print(f"Initial X shape: {X.shape}")
+        print(f"Initial y shape: {y.shape}")
+        
         return X, y
 
-import tensorflow as tf
-from sklearn.model_selection import train_test_split
-from tensorflow import keras
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.utils import Sequence
 
 class NFLDataSequence(Sequence):
     """
     Keras Sequence for NFL data with automatic padding of variable-length sequences.
     """
-    def __init__(self, X, y, batch_size=32, maxlen_x=None, maxlen_y=None, shuffle=True):
+    def __init__(self, X, y, batch_size=64, maxlen_x=10, maxlen_y=10, shuffle=False):
         """
         Args:
-            X (list): List of input sequences (each sequence is a list of time steps)
-            y (list): List of output sequences (each sequence is a list of time steps)
+            X (list/array): Input sequences (list of 2D arrays)
+            y (list/array): Output sequences (list of 2D arrays)
             batch_size (int): Batch size
-            maxlen_x (int, optional): Maximum length for input sequences. If None, uses max length in data.
-            maxlen_y (int, optional): Maximum length for output sequences. If None, uses max length in data.
+            maxlen_x (int, optional): Maximum length for input sequences.
+            maxlen_y (int, optional): Maximum length for output sequences.
             shuffle (bool): Whether to shuffle data at the end of each epoch
         """
         self.X = X
@@ -304,41 +305,10 @@ class NFLDataSequence(Sequence):
         batch_X = [self.X[i] for i in batch_indices]
         batch_y = [self.y[i] for i in batch_indices]
         
-        # Process X sequences: handle mixed types
-        # The data from process_value() should already have numeric types as floats
-        # and strings as strings. We need to filter out or encode string columns.
-        batch_X_numeric = []
-        for seq in batch_X:
-            seq_numeric = []
-            for frame in seq:
-                frame_numeric = []
-                for item in frame:
-                    # If item is already a float or int (from process_value), keep it
-                    if isinstance(item, (int, float)):
-                        frame_numeric.append(float(item))
-                    # If it's a string, we need to handle it
-                    # For now, let's use a hash or skip it
-                    # Better approach: filter these columns out or use proper encoding
-                    elif isinstance(item, str):
-                        # Try to convert to float, if fails, use hash or 0
-                        try:
-                            frame_numeric.append(float(item))
-                        except ValueError:
-                            # For non-numeric strings, use a simple hash-based encoding
-                            # This is a simple placeholder - ideally use proper categorical encoding
-                            frame_numeric.append(float(hash(item) % 10000))
-                    else:
-                        frame_numeric.append(0.0)
-                seq_numeric.append(frame_numeric)
-            batch_X_numeric.append(seq_numeric)
-        
-        # Use pad_sequences for both X and y
-        # pad_sequences expects sequences of shape (n_samples, n_timesteps) for 2D
-        # For 3D (n_samples, n_timesteps, n_features), we need to pad manually or use padding='post'
-        
-        # Method: Pad each sequence to maxlen, filling with zeros
+        # Pad sequences
+        # pad_sequences handles list of 2D arrays correctly
         X_padded = pad_sequences(
-            batch_X_numeric, 
+            batch_X, 
             maxlen=self.maxlen_x, 
             dtype='float32',
             padding='post',
@@ -363,27 +333,14 @@ class NFLDataSequence(Sequence):
             np.random.shuffle(self.indices)
 
 
-def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=None, maxlen_y=None):
+def create_tf_datasets(X, y, test_size=0.2, batch_size=64, maxlen_x=10, maxlen_y=10):
     """
     Splits X and y into training and validation sets and creates Keras Sequence datasets.
-    Uses keras.utils.Sequence with padding to handle variable-length sequences.
-    
-    Args:
-        X (np.ndarray): Input data (object array of variable-length sequences).
-        y (np.ndarray): Output data (object array of variable-length sequences).
-        test_size (float): Proportion of the dataset to include in the validation split.
-        batch_size (int): Batch size for the datasets.
-        maxlen_x (int, optional): Maximum length for input sequences. If None, auto-detects.
-        maxlen_y (int, optional): Maximum length for output sequences. If None, auto-detects.
-        
-    Returns:
-        train_sequence (NFLDataSequence): Training data sequence.
-        val_sequence (NFLDataSequence): Validation data sequence.
     """
     print("\n--- Creating Keras Sequence Datasets with Padding ---")
     
     try:
-        # Convert object arrays to lists
+        # Convert object arrays to lists for splitting
         X_list = X.tolist()
         y_list = y.tolist()
         
@@ -405,7 +362,7 @@ def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=None, maxlen
             batch_size=batch_size,
             maxlen_x=maxlen_x,
             maxlen_y=maxlen_y,
-            shuffle=True
+            shuffle=False
         )
         
         print("Creating Validation Sequence...")
@@ -432,6 +389,11 @@ def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=None, maxlen
 if __name__ == "__main__":
     TRAIN_DIR = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-prediction/train/'
     
+    # Check if directory exists
+    if not os.path.exists(TRAIN_DIR):
+        print(f"Warning: Directory {TRAIN_DIR} does not exist. Using current directory for testing.")
+        TRAIN_DIR = "."
+
     loader = NFLDataLoader(TRAIN_DIR)
     # Enable normalization
     X, y = loader.get_aligned_data(normalize=True)
@@ -443,16 +405,19 @@ if __name__ == "__main__":
     if len(X) > 0:
         print(f"Sample Input Sequence Length: {len(X[0])}")
         print(f"Sample Output Sequence Length: {len(y[0])}")
+        print(f"Input Features: {X[0].shape[1]}")
+        print(f"Output Features: {y[0].shape[1]}")
 
     # Create Keras Sequences with padding
-    train_seq, val_seq = create_tf_datasets(X, y, batch_size=32)
-    
-    if train_seq:
-        print("\nVerifying Sequence Element:")
-        # Get one batch to verify shapes
-        x_batch, y_batch = train_seq[0]
-        print(f"Batch X shape: {x_batch.shape}")
-        print(f"Batch y shape: {y_batch.shape}")
-        print(f"Max sequence lengths - X: {train_seq.maxlen_x}, y: {train_seq.maxlen_y}")
+    if len(X) > 0:
+        train_seq, val_seq = create_tf_datasets(X, y, batch_size=32)
+        
+        if train_seq:
+            print("\nVerifying Sequence Element:")
+            # Get one batch to verify shapes
+            x_batch, y_batch = train_seq[0]
+            print(f"Batch X shape: {x_batch.shape}")
+            print(f"Batch y shape: {y_batch.shape}")
+            print(f"Max sequence lengths - X: {train_seq.maxlen_x}, y: {train_seq.maxlen_y}")
 
     print("\nData loading, alignment, and sequence creation complete.")
