@@ -27,31 +27,38 @@ from unsupervised_models import (
 
 
 def train_autoencoder(train_seq, val_seq, epochs=50, latent_dim=128, model_save_path='autoencoder.keras'):
-    """Train LSTM autoencoder for representation learning.
+    """
+    Trains an LSTM autoencoder for sequence representation learning (reconstruction task).
+    
+    The function builds, compiles, and trains the model, and then saves both the 
+    full autoencoder and its encoder component.
     
     Args:
-        train_seq: Training data sequence
-        val_seq: Validation data sequence
-        epochs: Number of training epochs
-        latent_dim: Dimension of latent space
-        model_save_path: Path to save the trained model
+        train_seq (UnsupervisedNFLSequence): Training data sequence generator.
+        val_seq (UnsupervisedNFLSequence): Validation data sequence generator.
+        epochs (int): Number of training epochs.
+        latent_dim (int): Dimension of the latent space for the encoder output.
+        model_save_path (str): Path to save the best full autoencoder model.
+        
+    Returns:
+        tuple: (ae, history) where ae is the trained LSTMAutoencoder instance.
     """
     print("\n" + "="*70)
     print("TRAINING LSTM AUTOENCODER")
     print("="*70)
     
-    # Get input shape from first batch
+    # Get input shape from a sample batch to configure the model architecture
     x_sample, _ = train_seq[0]
     input_shape = (x_sample.shape[1], x_sample.shape[2])
     
     print(f"\nInput shape: {input_shape}")
     print(f"Latent dimension: {latent_dim}")
     
-    # Build autoencoder
+    # Build autoencoder model
     ae = LSTMAutoencoder(
         input_shape=input_shape,
         latent_dim=latent_dim,
-        lstm_units=[256, 128]
+        lstm_units=[256, 128] # Predefined LSTM unit architecture
     )
     ae.build_autoencoder()
     ae.compile(learning_rate=0.001)
@@ -59,10 +66,10 @@ def train_autoencoder(train_seq, val_seq, epochs=50, latent_dim=128, model_save_
     print("\n" + "-"*70)
     ae.get_summary()
     
-    # Create callbacks
+    # Create callbacks for checkpointing and early stopping
     callbacks = create_training_callbacks(model_save_path, patience=10)
     
-    # Train
+    # Train the model
     print("\n" + "-"*70)
     print("Starting training...")
     print("-"*70)
@@ -81,7 +88,7 @@ def train_autoencoder(train_seq, val_seq, epochs=50, latent_dim=128, model_save_
     print(f"Model saved to: {model_save_path}")
     print("="*70)
     
-    # Save encoder separately
+    # Save encoder separately for use in transfer learning
     encoder_path = model_save_path.replace('.keras', '_encoder.keras')
     ae.encoder.save(encoder_path)
     print(f"Encoder saved to: {encoder_path}")
@@ -91,20 +98,26 @@ def train_autoencoder(train_seq, val_seq, epochs=50, latent_dim=128, model_save_
 
 def train_next_step_predictor(train_seq, val_seq, epochs=50, prediction_steps=5, 
                                model_save_path='next_step_predictor.keras'):
-    """Train next-step predictor for self-supervised learning.
+    """
+    Trains a NextStepPredictor model for self-supervised sequence prediction.
+    
+    The model is trained to predict the next 'N' steps given the preceding sequence.
     
     Args:
-        train_seq: Training data sequence
-        val_seq: Validation data sequence
-        epochs: Number of training epochs
-        prediction_steps: Number of steps to predict ahead
-        model_save_path: Path to save the trained model
+        train_seq (UnsupervisedNFLSequence): Training data sequence generator.
+        val_seq (UnsupervisedNFLSequence): Validation data sequence generator.
+        epochs (int): Number of training epochs.
+        prediction_steps (int): Number of steps the model is configured to predict ahead.
+        model_save_path (str): Path to save the trained model.
+        
+    Returns:
+        tuple: (predictor, history) where predictor is the trained NextStepPredictor instance.
     """
     print("\n" + "="*70)
     print("TRAINING NEXT-STEP PREDICTOR")
     print("="*70)
     
-    # Get input shape from first batch
+    # Get input and output shapes from a sample batch
     x_sample, y_sample = train_seq[0]
     input_shape = (x_sample.shape[1], x_sample.shape[2])
     output_features = y_sample.shape[2]
@@ -113,11 +126,11 @@ def train_next_step_predictor(train_seq, val_seq, epochs=50, prediction_steps=5,
     print(f"Output steps: {prediction_steps}")
     print(f"Output features: {output_features}")
     
-    # Build model
+    # Build prediction model
     predictor = NextStepPredictor(
         input_shape=input_shape,
         output_steps=prediction_steps,
-        lstm_units=[256, 128],
+        lstm_units=[256, 128], # Predefined LSTM unit architecture
         output_features=output_features
     )
     predictor.build()
@@ -152,10 +165,14 @@ def train_next_step_predictor(train_seq, val_seq, epochs=50, prediction_steps=5,
 
 
 def main():
+    """
+    Parses command-line arguments, loads and splits the unsupervised data, 
+    creates data generators, and launches the specified unsupervised training task.
+    """
     parser = argparse.ArgumentParser(description='Unsupervised Pre-training for NFL Data')
     parser.add_argument('--task', type=str, default='autoencoder', 
                        choices=['autoencoder', 'next_step'],
-                       help='Unsupervised task to train')
+                       help='Unsupervised task to train (autoencoder or next_step)')
     parser.add_argument('--epochs', type=int, default=50, 
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=32, 
@@ -178,10 +195,10 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directory
+    # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Data directories
+    # Data directories (using both prediction and analytics data for broader coverage)
     PREDICTION_TRAIN_DIR = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-prediction/train/'
     ANALYTICS_TRAIN_DIR = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-analytics/114239_nfl_competition_files_published_analytics_final/train/'
     
@@ -209,14 +226,15 @@ def main():
     X = loader.get_sequences()
     
     if len(X) == 0:
-        print("ERROR: No data loaded!")
+        print("ERROR: No data loaded! Exiting.")
         return
     
     print(f"\nTotal sequences loaded: {len(X)}")
+    # Note: X is a numpy object array, accessing X[0] gives the first sequence (T, F)
     print(f"Sample sequence length: {len(X[0])}")
     print(f"Sample features: {len(X[0][0])}")
     
-    # Split into train/val
+    # Split loaded sequences into training and validation sets
     from sklearn.model_selection import train_test_split
     
     X_train, X_val = train_test_split(
@@ -228,7 +246,7 @@ def main():
     print(f"\nTraining sequences: {len(X_train)}")
     print(f"Validation sequences: {len(X_val)}")
     
-    # Create data sequences based on task
+    # Create data sequences (generators) based on the chosen task
     print("\n" + "="*70)
     print("CREATING DATA GENERATORS")
     print("="*70)
@@ -245,7 +263,8 @@ def main():
     val_seq = UnsupervisedNFLSequence(
         X_val,
         batch_size=args.batch_size,
-        maxlen=train_seq.maxlen,
+        # Use the maximum length calculated by the training sequence generator
+        maxlen=train_seq.maxlen, 
         shuffle=False,
         task=args.task,
         prediction_steps=args.prediction_steps
@@ -254,7 +273,7 @@ def main():
     # Generate timestamp for model name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Train based on task
+    # Launch training based on task
     if args.task == 'autoencoder':
         model_path = os.path.join(args.output_dir, f'autoencoder_{timestamp}.keras')
         model, history = train_autoencoder(
@@ -275,6 +294,7 @@ def main():
             model_save_path=model_path
         )
     
+    # Print final summary and instructions for transfer learning
     print("\n" + "="*70)
     print("TRAINING SUMMARY")
     print("="*70)

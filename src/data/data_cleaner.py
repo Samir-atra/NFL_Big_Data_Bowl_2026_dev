@@ -1,45 +1,17 @@
 
-import pandas as pd
-import numpy as np
-import os
+"""
+Module for cleaning NFL Big Data Bowl datasets.
 
-class DataCleaner:
-    """
-    A class for cleaning NFL Big Data Bowl datasets, handling missing values and sparsity.
-    """
-
-    def __init__(self, data_dir):
-        """
-        Initializes the DataCleaner with the directory containing the raw data files.
-
-        Args:
-            data_dir (str): Path to the directory containing input CSV files.
-        """
-        self.data_dir = data_dir
-        self.data_frames = {}
-
-    def load_data(self, week_numbers=range(1, 19)):
-        """
-        Loads input data for specified week numbers into a dictionary of DataFrames.
-
-        Args:
-            week_numbers (iterable): An iterable of week numbers to load (e.g., range(1, 19)).
-        """
-        print(f"Loading data from: {self.data_dir}")
-        for week in week_numbers:
-            file_name = f"input_2023_w{week:02d}.csv"
-            file_path = os.path.join(self.data_dir, file_name)
-            if os.path.exists(file_path):
-                print(f"  Loading {file_name}...")
-                self.data_frames[f"week_{week}"] = pd.read_csv(file_path)
-            else:
-                print(f"  Warning: File not found: {file_name}")
-        print("Data loading complete.")
-
+This module defines the DataCleaner class, which is responsible for loading
+raw competition data and applying various imputation strategies (mean, median, mode,
+forward/backward fill, constant) to handle missing values and data sparsity.
+It also integrates with DataQualityChecker for pre- and post-cleaning data quality reports.
+"""
 import pandas as pd
 import numpy as np
 import os
 from src.data_quality_checker import DataQualityChecker
+
 
 class DataCleaner:
     """

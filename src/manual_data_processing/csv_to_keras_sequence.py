@@ -1,3 +1,12 @@
+"""
+Module for end-to-end data loading, preprocessing, and batching for the
+NFL Big Data Bowl 2026 sequence prediction task.
+
+It uses the Polars library for efficient data loading and manipulation,
+TensorFlow's Keras Sequence utility for memory-efficient training with
+variable-length sequences, and implements feature engineering,
+normalization, and sequence padding.
+"""
 import polars as pl
 import numpy as np
 import os
@@ -12,10 +21,16 @@ class NFLDataLoader:
     Loads and processes NFL Big Data Bowl 2026 data from CSV files using Polars.
     Filters input data for 'player_to_predict' == True and aligns with output data.
     
-    Selected Input Features: ['x', 'y', 's', 'a', 'dir', 'o']
-    Selected Output Features: ['x', 'y']
+    Selected Input Features: All available features after processing.
+    Selected Output Targets: ['x', 'y']
     """
     def __init__(self, train_dir):
+        """
+        Initializes the DataLoader with the training data directory.
+
+        Args:
+            train_dir (str): Path to the directory containing input and output CSV files.
+        """
         self.train_dir = train_dir
         self.input_df = None
         self.output_df = None
@@ -23,8 +38,15 @@ class NFLDataLoader:
 
     def process_features(self, df):
         """
-        Processes features using Polars expressions.
-        Converts strings/booleans to floats and hashes categorical strings.
+        Processes features using Polars expressions to convert categorical/string
+        data (like boolean flags or 'offense'/'defense') into numeric float types.
+        It uses deterministic hashing as a fallback for unhandled string values.
+
+        Args:
+            df (pl.DataFrame): The Polars DataFrame containing raw data.
+
+        Returns:
+            list: A list of Polars expressions for feature selection and transformation.
         """
         # Define ID columns to exclude from feature processing
         id_cols = ['game_id', 'play_id', 'nfl_id', 'frame_id', 'player_to_predict', 'time']
@@ -60,8 +82,9 @@ class NFLDataLoader:
 
     def load_input_files(self):
         """
-        Loads and filters input CSV files using Polars.
-        Filters for 'player_to_predict' == True.
+        Loads and filters all input CSV files using Polars.
+        It filters for the rows corresponding to the 'player_to_predict' == True
+        and then processes the features.
         """
         input_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('input') and f.endswith('.csv')])
         print(f"Loading and filtering {len(input_files)} Input files...")
@@ -75,6 +98,7 @@ class NFLDataLoader:
                 
                 # Filter for player_to_predict == True
                 if "player_to_predict" in df.columns:
+                    # Handle both boolean and string representations of 'True'
                     if df["player_to_predict"].dtype == pl.Boolean:
                         df = df.filter(pl.col("player_to_predict") == True)
                     else:
@@ -108,8 +132,8 @@ class NFLDataLoader:
 
     def load_output_files(self):
         """
-        Loads output CSV files using Polars.
-        Selects specific features: ['x', 'y'].
+        Loads all output CSV files using Polars and selects the target features,
+        specifically ['x', 'y'] for prediction.
         """
         output_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('output') and f.endswith('.csv')])
         print(f"Loading {len(output_files)} Output files...")
@@ -149,7 +173,15 @@ class NFLDataLoader:
 
     def normalize_data(self, df, feature_cols):
         """
-        Normalizes the dataframe features (Z-score).
+        Normalizes the specified features in the DataFrame using Z-score (standard
+        normalization: (value - mean) / std).
+
+        Args:
+            df (pl.DataFrame): The DataFrame to normalize.
+            feature_cols (list): List of column names to normalize.
+
+        Returns:
+            tuple: A tuple containing (normalized_df, statistics_dict).
         """
         print("Normalizing features...")
         stats = {}
@@ -172,10 +204,17 @@ class NFLDataLoader:
 
     def get_aligned_data(self, normalize=False):
         """
-        Aligns input and output sequences and returns NumPy arrays.
+        Loads input and output data, aligns them by common sequence identifiers,
+        performs optional normalization, and groups the frames into sequences.
+
+        Args:
+            normalize (bool, optional): If True, normalizes the input features (X)
+                                        using Z-score. Defaults to False.
+
         Returns:
-            X (np.ndarray): Input sequences
-            y (np.ndarray): Output sequences
+            tuple: (X, y) where X and y are NumPy object arrays of sequences.
+                   X shape: (n_sequences,) containing arrays of shape (seq_len, n_features)
+                   y shape: (n_sequences,) containing arrays of shape (seq_len, n_targets)
         """
         self.load_input_files()
         self.load_output_files()
@@ -256,16 +295,24 @@ class NFLDataLoader:
 class NFLDataSequence(Sequence):
     """
     Keras Sequence for NFL data with automatic padding of variable-length sequences.
+    
+    This class is essential for training sequence models (like RNNs/LSTMs) when
+    using variable-length sequences, as it handles batch generation and padding
+    on the fly, minimizing memory usage.
     """
     def __init__(self, X, y, batch_size=64, maxlen_x=10, maxlen_y=10, shuffle=False):
         """
+        Initializes the sequence generator.
+
         Args:
-            X (list/array): Input sequences (list of 2D arrays)
-            y (list/array): Output sequences (list of 2D arrays)
-            batch_size (int): Batch size
-            maxlen_x (int, optional): Maximum length for input sequences.
-            maxlen_y (int, optional): Maximum length for output sequences.
-            shuffle (bool): Whether to shuffle data at the end of each epoch
+            X (list/array): Input sequences (list of 2D arrays).
+            y (list/array): Output sequences (list of 2D arrays).
+            batch_size (int): The number of sequences per batch.
+            maxlen_x (int, optional): Maximum length for input sequences. If None,
+                                      it is determined by the longest sequence in X.
+            maxlen_y (int, optional): Maximum length for output sequences. If None,
+                                      it is determined by the longest sequence in y.
+            shuffle (bool): Whether to shuffle data at the end of each epoch.
         """
         self.X = X
         self.y = y
@@ -275,11 +322,13 @@ class NFLDataSequence(Sequence):
         
         # Determine max lengths if not provided
         if maxlen_x is None:
+            # Calculate max length across all sequences in X
             self.maxlen_x = max(len(seq) for seq in X)
         else:
             self.maxlen_x = maxlen_x
             
         if maxlen_y is None:
+            # Calculate max length across all sequences in y
             self.maxlen_y = max(len(seq) for seq in y)
         else:
             self.maxlen_y = maxlen_y
@@ -291,28 +340,33 @@ class NFLDataSequence(Sequence):
             np.random.shuffle(self.indices)
     
     def __len__(self):
-        """Number of batches per epoch"""
+        """Number of batches per epoch (required by Keras Sequence protocol)."""
         return int(np.ceil(len(self.X) / self.batch_size))
     
     def __getitem__(self, idx):
         """
-        Generate one batch of data
+        Generates one batch of padded data (required by Keras Sequence protocol).
+
+        Args:
+            idx (int): The index of the batch.
+
+        Returns:
+            tuple: (X_padded, y_padded) - a batch of input and target arrays.
         """
         # Get batch indices
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         
-        # Get batch data
+        # Get batch data (sequences of different lengths)
         batch_X = [self.X[i] for i in batch_indices]
         batch_y = [self.y[i] for i in batch_indices]
         
-        # Pad sequences
-        # pad_sequences handles list of 2D arrays correctly
+        # Pad sequences to a uniform length (maxlen_x and maxlen_y)
         X_padded = pad_sequences(
             batch_X, 
             maxlen=self.maxlen_x, 
             dtype='float32',
-            padding='post',
-            truncating='post',
+            padding='post', # Padding zeros after the sequence
+            truncating='post', # Truncate sequences longer than maxlen from the end
             value=0.0
         )
         
@@ -328,14 +382,29 @@ class NFLDataSequence(Sequence):
         return X_padded, y_padded
     
     def on_epoch_end(self):
-        """Shuffle indices after each epoch"""
+        """
+        Callback used by Keras to shuffle indices after each epoch when shuffle=True.
+        """
         if self.shuffle:
             np.random.shuffle(self.indices)
 
 
 def create_tf_datasets(X, y, test_size=0.2, batch_size=64, maxlen_x=10, maxlen_y=10):
     """
-    Splits X and y into training and validation sets and creates Keras Sequence datasets.
+    Splits the NumPy sequence arrays into training and validation sets, and then
+    wraps them using the NFLDataSequence (a Keras Sequence) for efficient,
+    on-the-fly batching and padding during model training.
+
+    Args:
+        X (np.ndarray): Input sequences from NFLDataLoader.
+        y (np.ndarray): Output sequences from NFLDataLoader.
+        test_size (float, optional): Proportion of data to use for validation. Defaults to 0.2.
+        batch_size (int, optional): The batch size for the Keras Sequence. Defaults to 64.
+        maxlen_x (int, optional): Maximum length for input sequences. Defaults to 10.
+        maxlen_y (int, optional): Maximum length for output sequences. Defaults to 10.
+
+    Returns:
+        tuple: (train_sequence, val_sequence) or (None, None) on error.
     """
     print("\n--- Creating Keras Sequence Datasets with Padding ---")
     

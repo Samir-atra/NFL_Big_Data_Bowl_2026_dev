@@ -1,4 +1,13 @@
 
+"""
+Module for checking the quality of NFL Big Data Bowl datasets.
+
+This module defines the DataQualityChecker class, which provides utilities
+for generating reports on data quality issues such as missing values (NaN)
+and empty/sparse values (including empty strings, whitespace, and pandas.NA).
+It operates on a dictionary of pandas DataFrames, allowing for consistent
+quality checking across multiple weekly datasets.
+"""
 import pandas as pd
 import numpy as np
 import os

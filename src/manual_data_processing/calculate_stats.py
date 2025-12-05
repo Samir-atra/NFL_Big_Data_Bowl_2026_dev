@@ -1,3 +1,12 @@
+"""
+Module for calculating statistical properties of the NFL Big Data Bowl training data.
+
+This script uses the NFLDataLoader to load and align the sequence data (input features X
+and output targets y) and then computes the global mean and standard deviation
+for both X and y across all time steps in the dataset. These statistics are crucial
+for standardizing the data during model training and inference. The computed
+statistics are typically saved to a pickle file for later use.
+"""
 import numpy as np
 import os
 import sys

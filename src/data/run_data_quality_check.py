@@ -1,3 +1,11 @@
+"""
+Script to run a comprehensive data quality check on the NFL Big Data Bowl datasets.
+
+This module is a standalone script that loads raw input data for specified
+weeks and uses the DataQualityChecker class to generate reports on missing
+values (NaN) and empty values (empty strings, whitespace, pandas.NA).
+It is intended for quick assessment of data integrity before processing or training.
+"""
 import pandas as pd
 import numpy as np
 import os

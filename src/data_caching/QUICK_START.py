@@ -1,6 +1,10 @@
 """
-QUICK START: Data Caching for NFL Prediction Notebook
-Copy this code into your predictor.ipynb notebook!
+QUICK START: Data Caching Integration Guide
+
+This script provides the necessary code snippet to integrate the data caching
+mechanism (using `data_cache_helper.py`) into the main notebook, such as
+`predictor.ipynb`. It enables fast data loading from a local cache on
+subsequent runs, drastically reducing data preprocessing time.
 """
 
 # ============================================================

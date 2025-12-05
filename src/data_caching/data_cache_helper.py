@@ -1,6 +1,13 @@
 """
-Helper module for caching preprocessed training data.
-This saves time and RAM by avoiding reprocessing data on every run.
+Module for managing and orchestrating the caching of preprocessed data.
+
+This module provides the DataCache class for saving, loading, checking the existence,
+and clearing preprocessed training data (X_train, X_val, y_train, y_val) and the
+associated preprocessor object using numpy and joblib.
+
+It also includes the load_or_process_data utility function, which intelligently
+checks for cached data before triggering a potentially long-running data
+processing function, ensuring efficient data workflow.
 """
 
 import os

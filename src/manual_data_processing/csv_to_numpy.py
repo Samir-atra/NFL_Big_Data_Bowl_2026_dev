@@ -1,3 +1,12 @@
+"""
+Module for converting raw NFL Big Data Bowl CSV data into aligned NumPy sequence arrays.
+
+This module defines the NFLDataLoader class which uses the Polars library for
+efficient loading, feature processing (including handling of categorical/string
+data and date conversion), and alignment of input (X) and output (y) time series data.
+It returns NumPy object arrays of variable-length sequences, which are then typically
+used with the NFLDataSequence (a Keras Sequence) to manage on-the-fly padding and batching.
+"""
 import polars as pl
 import numpy as np
 import os
@@ -16,20 +25,28 @@ class NFLDataLoader:
 
     Attributes:
         train_dir (str): The directory containing the training CSV files.
-        input_sequences (pl.DataFrame): DataFrame containing input sequences.
-        output_sequences (pl.DataFrame): DataFrame containing output sequences.
+        input_sequences (pl.DataFrame): DataFrame containing input sequences (grouped lists of features).
+        output_sequences (pl.DataFrame): DataFrame containing output sequences (grouped lists of targets).
     """
     def __init__(self, train_dir):
+        """
+        Initializes the DataLoader with the training data directory.
+
+        Args:
+            train_dir (str): Path to the directory containing input and output CSV files.
+        """
         self.train_dir = train_dir
         self.input_sequences = None
         self.output_sequences = None
 
     def load_input_files(self):
-        """Loads and filters input CSV files from the training directory using Polars.
+        """
+        Loads and filters input CSV files from the training directory using Polars.
 
-        Iterates through files starting with 'input' and ending with '.csv'.
-        Filters rows where 'player_to_predict' is True and groups them by
-        (game_id, play_id, nfl_id) to form sequences.
+        It processes all input files, filters rows where 'player_to_predict' is True,
+        applies extensive vectorized feature processing to convert strings and
+        categorical data to floats, and finally groups the processed features by
+        (game_id, play_id, nfl_id) to form sequences of feature lists.
         """
         input_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('input') and f.endswith('.csv')])
         print(f"Loading and filtering {len(input_files)} Input files...")
@@ -38,11 +55,10 @@ class NFLDataLoader:
         for input_file in input_files:
             input_path = os.path.join(self.train_dir, input_file)
             try:
-                # Lazy load for efficiency, though read_csv is fine for smaller files
-                # Using read_csv to ensure we catch errors immediately
+                # Read CSV into Polars DataFrame
                 df = pl.read_csv(input_path, infer_schema_length=10000)
                 
-                # Filter for player_to_predict == True (case insensitive)
+                # Filter for the specific player whose movement we need to predict (case insensitive)
                 if "player_to_predict" in df.columns:
                     df = df.filter(
                         pl.col("player_to_predict").cast(pl.Utf8).str.to_lowercase() == "true"
@@ -61,72 +77,33 @@ class NFLDataLoader:
         # Concatenate all input dataframes
         full_df = pl.concat(dataframes, how="vertical_relaxed")
 
-        # Process columns (Vectorized)
-        # Handle Booleans, Directions, Sides, etc.
+        # --- Feature Processing (Vectorized Polars Expressions) ---
         
-        # Helper expression for boolean strings
-        def to_bool_float(col_name):
-            return (
-                pl.when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "true").then(1.0)
-                .when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "false").then(0.0)
-                .otherwise(0.0) # Default or handle errors
-            )
-
-        # Helper for direction
-        def to_dir_float(col_name):
-            return (
-                pl.when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "left").then(0.0)
-                .when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "right").then(1.0)
-                .otherwise(0.0)
-            )
-
-        # Helper for side
-        def to_side_float(col_name):
-            return (
-                pl.when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "defense").then(0.0)
-                .when(pl.col(col_name).cast(pl.Utf8).str.to_lowercase() == "offense").then(1.0)
-                .otherwise(0.0)
-            )
-            
-        # Apply transformations
-        # We need to identify columns to transform. Based on previous code:
-        # Booleans: player_to_predict (already filtered, but maybe others?)
-        # Direction: play_direction? (Not explicitly named in previous code but handled in generic process_value)
-        # Side: player_side?
-        
-        # For generic handling, we can inspect types, but for performance, explicit is better.
-        # Let's assume standard columns or iterate if needed.
-        # The previous code iterated every cell. Here we want vectorization.
-        # We will cast all remaining columns to float, hashing strings if needed.
-        
-        # Identify ID columns to exclude from feature processing
+        # Identify ID columns and known non-feature columns to exclude from processing
         id_cols = ["game_id", "play_id", "nfl_id", "frame_id", "player_to_predict", "time", "player_name", "num_frames_output", "ball_land_x", "ball_land_y"]
         feature_cols = [c for c in full_df.columns if c not in id_cols]
         
         expressions = []
         for col in feature_cols:
-            # Handle specific columns based on name
+            # 1. Specific handling for 'player_birth_date': Convert to player age in years
             if col == "player_birth_date":
+                # Assuming game date is 2023-09-01 for age calculation
                 expr = (pl.lit("2023-09-01").str.to_date() - pl.col(col).str.to_date(format="%Y-%m-%d", strict=False)).dt.total_days() / 365.25
                 expressions.append(expr.alias(col))
                 continue
 
-            # Check if column is string type
+            # 2. General handling for string columns (categorical, boolean strings, ranges)
             if full_df[col].dtype == pl.Utf8:
-                # Try specific conversions first
-                # We can't easily check content of every row efficiently without scanning
-                # So we apply a complex expression:
-                # If 'true'/'false' -> 1/0
-                # If 'left'/'right' -> 0/1
-                # If 'defense'/'offense' -> 0/1
-                # Else try cast float
-                # Else hash
-                
                 expr = (
+                    # Handle composite values like weight ranges (e.g., "180-200")
                     pl.when(pl.col(col).str.contains(r"^\d+-\d+$")).then(
-                        pl.col(col).str.extract(r"(\d+)-(\d+)", 1).cast(pl.Int32) * 12 +
-                        pl.col(col).str.extract(r"(\d+)-(\d+)", 2).cast(pl.Int32)
+                        # Simple average of the range
+                        (
+                            pl.col(col).str.extract(r"(\d+)-(\d+)", 1).cast(pl.Int32) +
+                            pl.col(col).str.extract(r"(\d+)-(\d+)", 2).cast(pl.Int32)
+                        ) / 2
                     )
+                    # Convert common categorical strings to floats (1.0 or 0.0)
                     .when(pl.col(col).str.to_lowercase() == "true").then(1.0)
                     .when(pl.col(col).str.to_lowercase() == "false").then(0.0)
                     .when(pl.col(col).str.to_lowercase() == "left").then(0.0)
@@ -134,59 +111,42 @@ class NFLDataLoader:
                     .when(pl.col(col).str.to_lowercase() == "defense").then(0.0)
                     .when(pl.col(col).str.to_lowercase() == "offense").then(1.0)
                     .otherwise(
-                        # Try cast to float, if null (failed), then hash
+                        # Fallback: Try casting to float. If conversion fails (is null), use hash.
                         pl.col(col).cast(pl.Float64, strict=False).fill_null(
-                            pl.col(col).hash() % 10000
+                            pl.col(col).hash() % 10000 # Deterministic hashing for categorical features
                         )
                     ).cast(pl.Float64).alias(col)
                 )
                 expressions.append(expr)
             else:
-                # Already numeric (int or float), cast to float
+                # 3. Numeric columns: Ensure they are Float64
                 expressions.append(pl.col(col).cast(pl.Float64).alias(col))
 
-        # Select IDs and processed features
+        # Apply all feature transformations
         full_df = full_df.with_columns(expressions)
         
-        # Group by keys and aggregate into lists
-        # We assume the order is defined by frame_id or file order. 
-        # If frame_id exists, sort by it.
+        # Sort by ID keys and frame_id to ensure correct temporal order within a sequence
         if "frame_id" in full_df.columns:
             full_df = full_df.sort(["game_id", "play_id", "nfl_id", "frame_id"])
         
-        # Group and aggregate features into lists
-        # We want a list of lists (sequence of steps, where each step is a list of features)
-        # Polars agg_list creates a list of values for a column.
-        # We need to combine these columns into a single "features" column which is a list of lists?
-        # Or just keep them as separate columns of lists.
-        # The previous code produced: [[f1, f2, ...], [f1, f2, ...], ...] for each sequence.
-        
-        # Let's aggregate each feature column into a list
+        # Group features into lists (one list per feature per sequence)
         agg_exprs = [pl.col(c) for c in feature_cols]
         
+        # Aggregate the time steps for each feature column into a single list per sequence
         grouped = full_df.group_by(["game_id", "play_id", "nfl_id"], maintain_order=True).agg(agg_exprs)
         
-        # Now we have:
-        # game_id, play_id, nfl_id, col1_list, col2_list, ...
-        # We need to transpose this to:
-        # game_id, play_id, nfl_id, [[col1_t0, col2_t0, ...], [col1_t1, col2_t1, ...]]
-        # This is hard in Polars directly.
-        # Easier: Convert to numpy/pandas later or iterate.
-        
-        # Actually, for Keras, we usually want (samples, timesteps, features).
-        # If we have separate columns of lists:
-        # col1: [t0, t1, t2]
-        # col2: [t0, t1, t2]
-        # We can stack them.
-        
+        # The result is a DataFrame where each row is a sequence (a play-player combination)
+        # and feature columns contain lists of values over time.
         self.input_sequences = grouped
 
     def load_output_files(self):
-        """Loads output CSV files from the training directory using Polars.
+        """
+        Loads output CSV files from the training directory using Polars.
 
         Iterates through files starting with 'output' and ending with '.csv'.
-        Extracts 'x' and 'y' features, grouping them by (game_id, play_id, nfl_id)
-        to form sequences.
+        Extracts the target features ('x' and 'y' coordinates), ensures they are
+        of float type, and groups them by (game_id, play_id, nfl_id) to form
+        output sequences (lists of targets).
         """
         output_files = sorted([f for f in os.listdir(self.train_dir) if f.startswith('output') and f.endswith('.csv')])
         print(f"Loading {len(output_files)} Output files...")
@@ -197,6 +157,7 @@ class NFLDataLoader:
         for output_file in output_files:
             output_path = os.path.join(self.train_dir, output_file)
             try:
+                # Select only the required ID columns and target features
                 df = pl.read_csv(output_path, columns=['game_id', 'play_id', 'nfl_id'] + features_to_keep, infer_schema_length=10000)
                 dataframes.append(df)
             except Exception as e:
@@ -209,15 +170,15 @@ class NFLDataLoader:
 
         full_df = pl.concat(dataframes, how="vertical_relaxed")
         
-        # Ensure float type
+        # Ensure target features are float type
         full_df = full_df.with_columns([
             pl.col(c).cast(pl.Float64) for c in features_to_keep
         ])
         
         # Sort if frame info is implicit (usually matches input)
         # We don't have frame_id in output usually? Assuming same order.
-        # Ideally we should sort by something, but without frame_id we rely on file order.
         
+        # Group and aggregate target features into lists
         grouped = full_df.group_by(["game_id", "play_id", "nfl_id"], maintain_order=True).agg([
             pl.col('x'),
             pl.col('y')
@@ -226,15 +187,20 @@ class NFLDataLoader:
         self.output_sequences = grouped
 
     def get_aligned_data(self):
-        """Aligns input and output sequences based on common keys.
+        """
+        Aligns input and output sequences based on common sequence keys.
 
-        Loads both input and output files, finds the intersection of keys,
-        and creates aligned lists of sequences.
+        Performs an inner join on the grouped input and output data to ensure
+        only matching sequences are retained. It then converts the Polars
+        DataFrame of feature lists into two NumPy object arrays of sequences
+        suitable for Keras training.
 
         Returns:
             tuple: A tuple containing:
-                - X (np.ndarray): Array of input sequences (object array).
-                - y (np.ndarray): Array of output sequences (object array).
+                - X (np.ndarray): Array of input sequences (object array). Each element
+                  is a 2D array of shape (seq_len, n_features).
+                - y (np.ndarray): Array of output sequences (object array). Each element
+                  is a 2D array of shape (seq_len, n_targets).
         """
         self.load_input_files()
         self.load_output_files()
@@ -249,13 +215,12 @@ class NFLDataLoader:
             print("Output sequences empty.")
             return np.array([]), np.array([])
 
-        # Join on keys
-        # Inner join to keep only matching sequences
+        # Inner join on keys to keep only matching sequences
         joined = self.input_sequences.join(
             self.output_sequences, 
             on=["game_id", "play_id", "nfl_id"], 
             how="inner",
-            suffix="_out"
+            suffix="_out" # Use suffix for output columns in case of collision
         )
         
         print(f"Processing complete.")
@@ -265,56 +230,18 @@ class NFLDataLoader:
             print("No matching data found.")
             return np.array([]), np.array([])
 
-        # Convert to the format expected by NFLDataSequence
-        # X: list of [ [f1, f2, ...], [f1, f2, ...] ]
-        # y: list of [ [x, y], [x, y] ... ]
+        # --- Convert from Polars lists to NumPy sequences ---
         
-        # The joined dataframe has columns:
-        # game_id, play_id, nfl_id, feat1_list, feat2_list, ..., x_list, y_list
-        
-        # We need to identify feature columns vs output columns
-        # Output columns are 'x' and 'y' (from output_sequences, might be renamed if collision)
-        # Actually, input also has 'x' and 'y' usually.
-        # In load_output_files, we aggregated 'x' and 'y'.
-        # In load_input_files, we aggregated all features.
-        # If input has 'x', 'y', they will collide.
-        # The join suffix="_out" handles this. Output cols will be 'x_out', 'y_out'.
-        
-        # Input feature columns: all columns from input_sequences except keys
+        # Determine the final feature and output columns in the joined DF
         input_cols = [c for c in self.input_sequences.columns if c not in ["game_id", "play_id", "nfl_id"]]
-        output_cols = ["x_out" if "x" in input_cols else "x", "y_out" if "y" in input_cols else "y"]
-        
-        # Check if output cols exist
-        if output_cols[0] not in joined.columns:
-            # Maybe input didn't have x/y, so no suffix
+        # Output columns: check for suffix '_out' or use original names (assuming x, y are the target features)
+        output_cols = ["x_out", "y_out"] 
+        if "x_out" not in joined.columns:
             output_cols = ["x", "y"]
             
-        # Convert to numpy
-        # This is the heavy part.
-        # We can iterate rows or use map_elements?
-        # Ideally we want to stack the feature lists.
-        
-        # Let's extract input features as a list of arrays
-        # Each row i has [feat1_seq, feat2_seq, ...]
-        # We want [[feat1_t0, feat2_t0], [feat1_t1, feat2_t1], ...]
-        
-        # Efficient way:
-        # 1. Convert relevant columns to a dict of lists or similar
-        # 2. Iterate and stack
-        
         print("Converting to NumPy arrays...")
         
-        # Extract input data
-        # shape: (n_samples, n_features, n_timesteps) roughly, but variable timesteps
-        # We want (n_samples, n_timesteps, n_features)
-        
-        # Get all input feature lists as a list of lists of lists?
-        # joined.select(input_cols).to_dict(as_series=False) gives {col: [seq1, seq2...]}
-        
-        # This might be memory intensive.
-        # Let's try row iteration with a generator or list comp
-        
-        # Pre-fetch column indices for speed
+        # Pre-fetch column indices for efficient iteration
         input_col_indices = [joined.columns.index(c) for c in input_cols]
         output_col_indices = [joined.columns.index(c) for c in output_cols]
         
@@ -324,28 +251,21 @@ class NFLDataLoader:
         y_list = []
         
         for row in rows:
-            # Input
-            # row[i] is a list of values for feature i for this sequence
-            # We want to stack them: [[val_0_0, val_1_0...], [val_0_1, val_1_1...]]
-            # Zip is useful here
-            
-            # Get all feature sequences for this row
+            # 1. Extract feature sequences for the current row
+            # feature_seqs: [ [feat1_t0, feat1_t1...], [feat2_t0, feat2_t1...] ... ]
             feature_seqs = [row[i] for i in input_col_indices]
-            # feature_seqs is [ [t0, t1...], [t0, t1...] ... ] (n_features, n_timesteps)
-            # We want (n_timesteps, n_features)
-            # zip(*feature_seqs) does exactly this transpose
             
-            # Note: Polars lists might be None if empty? Assuming data is clean.
-            # Also assuming all feature lists have same length (they should if from same rows)
-            
+            # 2. Transpose and stack: Polars stores (n_features, n_timesteps), we need (n_timesteps, n_features)
+            # zip(*...) transposes the lists for column stacking
             X_seq = list(zip(*feature_seqs))
             X_list.append(X_seq)
             
-            # Output
+            # 3. Extract output sequences
             out_seqs = [row[i] for i in output_col_indices]
             y_seq = list(zip(*out_seqs))
             y_list.append(y_seq)
             
+        # Create NumPy object arrays (to handle variable-length sequences)
         X = np.array(X_list, dtype=object)
         y = np.array(y_list, dtype=object)
         
@@ -471,7 +391,7 @@ class NFLDataSequence(Sequence):
             np.random.shuffle(self.indices)
 
 
-def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=54, maxlen_y=54):
+def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=None, maxlen_y=None):
     """Splits data into training and validation sets and creates Keras Sequence datasets.
 
     Uses `train_test_split` to divide the data and then wraps the resulting
@@ -484,9 +404,9 @@ def create_tf_datasets(X, y, test_size=0.2, batch_size=32, maxlen_x=54, maxlen_y
             validation split. Defaults to 0.2.
         batch_size (int, optional): Batch size for the datasets. Defaults to 32.
         maxlen_x (int, optional): Maximum length for input sequences. If None,
-            auto-detects from the training set. Defaults to 10.
+            the maximum length in the training set will be used. Defaults to None.
         maxlen_y (int, optional): Maximum length for output sequences. If None,
-            auto-detects from the training set. Defaults to 10.
+            the maximum length in the training set will be used. Defaults to None.
 
     Returns:
         tuple: A tuple containing:
