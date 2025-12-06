@@ -12,8 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Add the parent directory to the system path to find the data_reader module
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add the src directory to the system path to find the data_reader module
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from data_reader import DataReader
 
 class DataVisualizer:
@@ -131,7 +131,7 @@ def main():
     Main execution function to set up the DataReader and generate a set of
     visualizations for a sample week of prediction data.
     """
-    prediction_data_dir = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-prediction/train/'
+    prediction_data_dir = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-analytics/114239_nfl_competition_files_published_analytics_final/train'
     
     try:
         print("--- Generating Visualizations for Prediction Data ---")
