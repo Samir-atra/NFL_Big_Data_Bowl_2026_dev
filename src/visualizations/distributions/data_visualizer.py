@@ -1,10 +1,27 @@
 """
-Module for visualizing static player attributes and dynamic movement data distributions.
+Module: Data Visualizer (Single Week / Manual)
+==============================================
 
-This script uses the Matplotlib and Seaborn libraries to generate plots such as
-player height/weight distributions, speed/acceleration by position, and scatter
-plots of on-field player coordinates. It relies on the DataReader module to load
-data for specific weeks.
+This module provides the core `DataVisualizer` class for visualizing static player 
+attributes and dynamic movement data distributions for a specific, manually-chosen week.
+
+Use Cases:
+----------
+- Generating a standard set of plots for a single week during development.
+- Inspecting data quality for a specific week.
+- Providing the base methods that other visualizers (Global, Batch) might emulate.
+
+Visualizations Generated:
+-------------------------
+1. Player Height Distribution
+2. Player Weight Distribution
+3. Speed (s) by Position
+4. Acceleration (a) by Position
+5. Field Position Scatter Plot
+
+Usage:
+------
+    $ python src/visualizations/distributions/data_visualizer.py
 """
 import os
 import sys
@@ -49,6 +66,7 @@ class DataVisualizer:
             if pd.isna(height_str):
                 return None
             try:
+                # Expected format: '6-2'
                 feet, inches = map(int, height_str.split('-'))
                 return (feet * 12) + inches
             except ValueError:
@@ -115,10 +133,17 @@ class DataVisualizer:
         """
         df = self.reader.read_week(week)
         
+        # Robustly determine column names for coordinates (fixing the issue where x_x might not exist)
+        x_col = 'x' if 'x' in df.columns else ('x_x' if 'x_x' in df.columns else None)
+        y_col = 'y' if 'y' in df.columns else ('y_x' if 'y_x' in df.columns else None)
+        
+        if not x_col or not y_col:
+            print(f"Warning: Could not find x/y coordinate columns for week {week}. Skipping plot.")
+            return
+
         # Scatter plot of all player positions on the field
         plt.figure(figsize=(10, 10))
-        # Note: Assuming 'x_x' and 'y_x' are the field coordinates after join/read
-        sns.scatterplot(x='x_x', y='y_x', data=df, hue='player_side', alpha=0.5)
+        sns.scatterplot(x=x_col, y=y_col, data=df, hue='player_side', alpha=0.5)
         plt.title(f'Player Positions on Field - Week {week}')
         plt.xlabel('X Coordinate')
         plt.ylabel('Y Coordinate')
@@ -129,7 +154,7 @@ class DataVisualizer:
 def main():
     """
     Main execution function to set up the DataReader and generate a set of
-    visualizations for a sample week of prediction data.
+    visualizations for a sample week of analytics data.
     """
     prediction_data_dir = '/home/samer/Desktop/competitions/NFL_Big_Data_Bowl_2026_dev/nfl-big-data-bowl-2026-analytics/114239_nfl_competition_files_published_analytics_final/train'
     
