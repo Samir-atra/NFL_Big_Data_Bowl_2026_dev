@@ -535,4 +535,12 @@ For questions or issues, please open a GitHub issue or contact the repository ma
 
 ---
 
+## Citation
+
+If you use this project in your research, please cite it as follows:
+
+ Attrah, Samer, Supervised LSTM Sequence-to-Sequence Models for NFL Player Trajectory Prediction: A Deep Learning Approach to the Big Data Bowl 2026 (April 20, 2026). Available at SSRN: https://ssrn.com/abstract=6749101 or http://dx.doi.org/10.2139/ssrn.6749101 
+
+---
+
 **Happy Coding! 🏈📊**
